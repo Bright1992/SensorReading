@@ -1,12 +1,18 @@
 package com.test.bright.sensorreading;
 
 import android.Manifest;
+import android.app.AlertDialog;
+import android.app.Dialog;
+import android.app.DialogFragment;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.hardware.*;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.support.annotation.RequiresApi;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
@@ -32,13 +38,46 @@ import org.w3c.dom.Text;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
-public class SensorActivity extends AppCompatActivity implements SensorEventListener{
+public class SensorActivity extends AppCompatActivity implements SensorEventListener, SensorSelectionDialogFragment.SensorSelectionDialogListener{
+
+    private static final Map<Integer, String> INTERESTED_SENSORS;
+    static{
+        INTERESTED_SENSORS=new HashMap<>();
+        //Basic sensors
+        INTERESTED_SENSORS.put(Sensor.TYPE_ACCELEROMETER, "Accelerometer (with gravity)");
+        INTERESTED_SENSORS.put(Sensor.TYPE_GYROSCOPE, "Gyroscope");
+        INTERESTED_SENSORS.put(Sensor.TYPE_MAGNETIC_FIELD, "Magnetic field");
+        INTERESTED_SENSORS.put(Sensor.TYPE_AMBIENT_TEMPERATURE, "Temperature");
+        INTERESTED_SENSORS.put(Sensor.TYPE_LIGHT, "Light");
+        INTERESTED_SENSORS.put(Sensor.TYPE_PRESSURE, "Pressure");
+        INTERESTED_SENSORS.put(Sensor.TYPE_RELATIVE_HUMIDITY, "Relative humidity");
+
+        //Composite sensors
+        INTERESTED_SENSORS.put(Sensor.TYPE_ROTATION_VECTOR, "Rotation vector");
+        INTERESTED_SENSORS.put(Sensor.TYPE_LINEAR_ACCELERATION, "Accelerometer (without gravity)");
+
+        //Uncalibrated sensors
+        INTERESTED_SENSORS.put(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED, "Uncalibrated accelerometer");
+        INTERESTED_SENSORS.put(Sensor.TYPE_GYROSCOPE_UNCALIBRATED, "Uncalibrated gyroscope");
+        INTERESTED_SENSORS.put(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED, "Uncalibrated magnetic field");
+    }
+
     private SensorManager mSensorManager;
     private Sensor mMag;
-    private long uTime1,uTime2,uTimeStart;
+    private long uTimeStart;
     private long nInterval;
     private int bufSize=200;
     private boolean running=false;
@@ -50,9 +89,12 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
     private Button fab,plot_btn;
     private GraphView graph;
     private TextView sensor_data_text;
+    private DialogFragment mDialogFragment;
 
-    private PrintWriter fout;
-    private File dataDir;
+    private Map<Integer,PrintWriter> mFiles = new HashMap<>();
+    private Map<Integer,Long>   mTimers = new HashMap<>();
+
+    private File baseDir,dataDir;
     private String filename;
 
     @Override
@@ -62,6 +104,12 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
+        mDialogFragment = new SensorSelectionDialogFragment();
+        mSensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+
+//        if(savedInstanceState==null)
+        checkSensors();
+
         fab = (Button) findViewById(R.id.fab);
         fab.setText("Start");
         fab.setOnClickListener(new View.OnClickListener() {
@@ -69,38 +117,28 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
             public void onClick(View view) {
                 if(running==false){
                     running=true;
-                    mSensorManager.registerListener(SensorActivity.this, mMag, 1000*1000/*SensorManager.SENSOR_DELAY_NORMAL*/);
+                    registerSensors();
                     fab.setText("Pause");
                     uTimeStart=System.nanoTime();
-                    if(fout!=null)  fout.close();
-                    try {
-                        filename=new Date().toString()+".txt";
-                        fout = new PrintWriter(new File(dataDir,filename));
-                        System.out.println(Environment.getExternalStorageDirectory().getAbsolutePath()+"/"+filename);
+                    for(int s:mSelectedSensors){
+                        mTimers.put(s,uTimeStart);
                     }
-                    catch(Exception e){
-                        e.printStackTrace();
-                        System.out.println("Failed to open file");
-                    }
+                    openFiles();
                     graph.removeAllSeries();
                     series=new LineGraphSeries<>();
                     graph.addSeries(series);
                 }
                 else{
                     running=false;
-                    try {
-                        mSensorManager.unregisterListener(SensorActivity.this, mMag);
-                    }
-                    catch(Exception e){
-                        Log.d("Warning","Sensor not registered");
-                    }
-                    fout.close();
+                    mSensorManager.unregisterListener(SensorActivity.this);
+                    closeFile();
                     Toast toast = Toast.makeText(SensorActivity.this,"Data saved to file \""+filename+"\"",Toast.LENGTH_SHORT);
                     toast.show();
                     while(!pointBuf.isEmpty())
                         pointBuf.remove();
                     fab.setText("Start");
                 }
+                invalidateOptionsMenu();
             }
         });
 
@@ -126,9 +164,9 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
                 }
         );
 
+
         sensor_data_text = (TextView) findViewById(R.id.sensor_data_text);
 
-        mSensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         mMag = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
         long mInterval = 100;
         nInterval=mInterval*1000*1000;
@@ -166,13 +204,34 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
             );
         }
         try {
-            dataDir = new File(Environment.getExternalStorageDirectory(),"SensorReading");
-            dataDir.mkdirs();
+            baseDir = new File(Environment.getExternalStorageDirectory(),"SensorReading");
+            baseDir.mkdirs();
         }
         catch(Exception e){
             e.printStackTrace();
         }
 
+    }
+
+    private void closeFile() {
+        for(PrintWriter f:mFiles.values())
+            f.close();
+    }
+
+    private void openFiles() {
+        try {
+            filename=new Date().toString();
+            dataDir = new File(baseDir,filename);
+            dataDir.mkdirs();
+            mFiles = new HashMap<>();
+            for(int s:mSelectedSensors)
+                mFiles.put(s, new PrintWriter(new File(dataDir,INTERESTED_SENSORS.get(s)+".txt")));
+            System.out.println(Environment.getExternalStorageDirectory().getAbsolutePath()+"/"+filename);
+        }
+        catch(Exception e){
+            e.printStackTrace();
+            System.out.println("Failed to open file");
+        }
     }
 
     @Override
@@ -181,10 +240,12 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
         if(getRequestedOrientation()!= ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE){
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         }
-        super.onResume();
         if(running) {
-            mSensorManager.registerListener(this, mMag, 1000 * 1000/*SensorManager.SENSOR_DELAY_NORMAL*/);
-            uTime1 = System.nanoTime();
+            registerSensors();
+            long uTimeStart = System.nanoTime();
+            for(int s:mSelectedSensors){
+                mTimers.put(s,uTimeStart);
+            }
         }
     }
 
@@ -204,9 +265,11 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
     public final void onSensorChanged(SensorEvent event) {
         // The light sensor returns a single value.
         // Many sensors return 3 values, one for each axis.
-        uTime2=System.nanoTime();
+        long uTime2=System.nanoTime();
+        int type = event.sensor.getType();
+        long uTime1=mTimers.get(type);
         if(uTime2-uTime1>=nInterval) {
-            uTime1=uTime2;
+            mTimers.put(type,uTime2);
             float x = event.values[0];
             float y = event.values[1];
             float z = event.values[2];
@@ -215,7 +278,7 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
             if(pointBuf.size()>bufSize){
                 pointBuf.removeFirst();
             }
-            fout.format("%f\t%f\n",(uTime2-uTimeStart)/1e9,m);
+            mFiles.get(type).format("%f\t%f\t%f\t%f\t%f\n",(uTime2-uTimeStart)/1e9,x,y,z,m);
             sensor_data_text.setText(Double.toString(Math.sqrt(x * x + y * y + z * z)));
             if(plotting) {
                 series.appendData(new DataPoint((uTime2 - uTimeStart) / 1e9, m), true, bufSize, false);
@@ -229,6 +292,7 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_sensor, menu);
+//        menu.add()
         return true;
     }
 
@@ -241,6 +305,7 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
 
         //noinspection SimplifiableIfStatement
         if (id == R.id.action_settings) {
+            showSensorSelectionDialog();
             return true;
         }
 
@@ -248,9 +313,72 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
     }
 
     @Override
+    public boolean onPrepareOptionsMenu(Menu menu){
+        if(running)
+            menu.getItem(0).setEnabled(false);
+        else
+            menu.getItem(0).setEnabled(true);
+        return super.onPrepareOptionsMenu(menu);
+    }
+
+    @Override
     protected void onDestroy(){
         super.onDestroy();
-        if(fout!=null)
-            fout.close();
+        closeFile();
     }
+
+    private ArrayList<String> available_sensor_desc;
+    private ArrayList<Integer> available_sensor_id;
+
+    private int checkSensors(){
+        available_sensor_desc = new ArrayList<>();
+        available_sensor_id = new ArrayList<>();
+        int c=0;
+        ArrayList<Map.Entry<Integer,String>> entries = new ArrayList<>(INTERESTED_SENSORS.entrySet());
+        Collections.sort(entries,
+                new Comparator<Map.Entry<Integer, String>>() {
+                    @Override
+                    public int compare(Map.Entry<Integer, String> t1, Map.Entry<Integer, String> t2) {
+                        return t1.getValue().compareTo(t2.getValue());
+                    }
+                }
+        );
+        for(Map.Entry<Integer, String> e : entries) {
+            if(mSensorManager.getDefaultSensor(e.getKey())!=null)
+                System.out.println(String.valueOf(++c) + ":" + e.getValue());
+            available_sensor_id.add(e.getKey());
+            available_sensor_desc.add(e.getValue());
+        }
+        return c;
+    }
+
+    private void registerSensors(){
+        mSensorManager.unregisterListener(this);
+        for(int s:mSelectedSensors)
+            mSensorManager.registerListener(this,mSensorManager.getDefaultSensor(s),SensorManager.SENSOR_DELAY_NORMAL);
+    }
+
+    private void showSensorSelectionDialog(){
+        Bundle mAvailableSensors;
+        if((mAvailableSensors = mDialogFragment.getArguments())==null)
+            mAvailableSensors = new Bundle();
+        mAvailableSensors.putIntegerArrayList(SensorSelectionDialogFragment.KEY_AVAILABLE_SENSORS_ID,available_sensor_id);
+        mAvailableSensors.putStringArrayList(SensorSelectionDialogFragment.KEY_AVAILABLE_SENSORS_DESC,available_sensor_desc);
+        mDialogFragment.setArguments(mAvailableSensors);
+        mDialogFragment.show(getFragmentManager(),"selection");
+    }
+
+    //In default magnetometer is selected
+    private ArrayList<Integer> mSelectedSensors = new ArrayList<>(Arrays.asList(new Integer[]{Sensor.TYPE_MAGNETIC_FIELD}));
+
+    @Override
+    public void onDialogPositiveClicked(DialogFragment dialog, ArrayList<Integer> selected){
+        mSelectedSensors = new ArrayList<>(selected);
+    }
+
+    @Override
+    public void onDialogNegativeClicked(DialogFragment dialog){
+
+    }
+
 }
