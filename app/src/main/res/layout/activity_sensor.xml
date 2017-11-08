@@ -7,6 +7,11 @@
     android:layout_height="match_parent"
     tools:context="com.test.bright.sensorreading.SensorActivity">
 
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
     <android.support.design.widget.AppBarLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -21,22 +26,62 @@
 
     </android.support.design.widget.AppBarLayout>
 
-    <include layout="@layout/content_sensor"/>
 
-    <Button
-        android:id="@+id/fab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="@dimen/fab_margin"
+
+    <com.jjoe64.graphview.GraphView
+        android:layout_height="200dp"
+        android:layout_width="match_parent"
+        android:id="@+id/graph"
         />
 
-    <Button
+    <TextView
+        android:id="@+id/sensor_data_text"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="16dp"
-        android:id="@+id/plot_btn"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="0.8"
+        android:layout_gravity="center_horizontal"
         />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:gravity="bottom"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/fab"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_margin="@dimen/fab_margin"
+            />
+
+        <Space
+            android:layout_width="wrap_content"
+            android:layout_height="0px"
+            android:layout_weight="1"/>
+
+        <Spinner
+            android:id="@+id/spn_plotting_sensor"
+            android:layout_width="wrap_content"
+            android:layout_height="42dp"
+            android:layout_gravity="center_horizontal"
+            android:entries="@array/planets_array"></Spinner>
+
+        <Button
+            android:id="@+id/plot_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_margin="16dp"
+            />
+
+    </LinearLayout>
+</LinearLayout>
+
 
 </android.support.design.widget.CoordinatorLayout>
